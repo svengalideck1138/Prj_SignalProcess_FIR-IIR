@@ -1,0 +1,9 @@
+../Core/Src/app_tasks.c:110:6:HAL_ADC_ConvCpltCallback	24	static,ignoring_inline_asm
+../Core/Src/app_tasks.c:128:6:HAL_UART_TxCpltCallback	24	static,ignoring_inline_asm
+../Core/Src/app_tasks.c:141:13:AdcTask	24	static
+../Core/Src/app_tasks.c:184:17:Fft_BarTopY	24	static
+../Core/Src/app_tasks.c:196:13:FftTask	56	static
+../Core/Src/app_tasks.c:267:13:UartTask	24	static
+../Core/Src/app_tasks.c:310:17:Build_RawFrame	24	static
+../Core/Src/app_tasks.c:322:17:Build_FftFrame	32	static
+../Core/Src/app_tasks.c:337:6:App_FreeRTOS_Init	24	static,ignoring_inline_asm

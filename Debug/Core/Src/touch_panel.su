@@ -1,0 +1,13 @@
+../Core/Src/touch_panel.c:45:6:TP_Init	4	static
+../Core/Src/touch_panel.c:115:6:DelayUS	24	static
+../Core/Src/touch_panel.c:131:13:WR_CMD	16	static
+../Core/Src/touch_panel.c:146:12:RD_AD	16	static
+../Core/Src/touch_panel.c:164:5:Read_X	16	static
+../Core/Src/touch_panel.c:184:5:Read_Y	16	static
+../Core/Src/touch_panel.c:205:6:TP_GetAdXY	24	static
+../Core/Src/touch_panel.c:224:6:TP_DrawPoint	16	static
+../Core/Src/touch_panel.c:241:6:DrawCross	16	static
+../Core/Src/touch_panel.c:258:13:Read_Ads7846	120	static
+../Core/Src/touch_panel.c:340:17:setCalibrationMatrix	32	static
+../Core/Src/touch_panel.c:387:17:getDisplayPoint	48	static
+../Core/Src/touch_panel.c:424:6:TouchPanel_Calibrate	16	static

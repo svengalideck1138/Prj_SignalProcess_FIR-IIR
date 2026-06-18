@@ -1,0 +1,9 @@
+../Core/Src/app_tasks.c:110:6:HAL_ADC_ConvCpltCallback	4
+../Core/Src/app_tasks.c:128:6:HAL_UART_TxCpltCallback	4
+../Core/Src/app_tasks.c:141:13:AdcTask	5
+../Core/Src/app_tasks.c:184:17:Fft_BarTopY	3
+../Core/Src/app_tasks.c:196:13:FftTask	10
+../Core/Src/app_tasks.c:267:13:UartTask	5
+../Core/Src/app_tasks.c:310:17:Build_RawFrame	1
+../Core/Src/app_tasks.c:322:17:Build_FftFrame	1
+../Core/Src/app_tasks.c:337:6:App_FreeRTOS_Init	8
