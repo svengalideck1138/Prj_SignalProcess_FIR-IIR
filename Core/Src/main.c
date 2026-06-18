@@ -188,15 +188,14 @@ void LCD_TFT_Init_Calib(void)
 	BSP_LCD_SetBackColor(LCD_COLOR_BLACK);
 	BSP_LCD_Clear(LCD_COLOR_BLACK);
 
+	/* 상단 제목 띠 (시간영역 RAW/FIR/IIR 3분할 뷰). 밴드별 색상 라벨은 AdcTask 가 그린다. */
 	BSP_LCD_SetTextColor(LCD_COLOR_LIGHTGRAY);
-	BSP_LCD_FillRect(0, 0, 120, 17);
-	BSP_LCD_FillRect(255, 0, 65, 17);
+	BSP_LCD_FillRect(0, 0, 320, 17);
 
 	BSP_LCD_SetFont(&Font12);
 	BSP_LCD_SetBackColor(LCD_COLOR_LIGHTGRAY);
 	BSP_LCD_SetTextColor(LCD_COLOR_WHITE);
-	BSP_LCD_DisplayStringAt(3,3, (uint8_t*)"Time Domain View",LEFT_MODE);
-	BSP_LCD_DisplayStringAt(0,3, (uint8_t*)"FFT View",RIGHT_MODE);
+	BSP_LCD_DisplayStringAt(3,3, (uint8_t*)"Time Domain : RAW / FIR / IIR",LEFT_MODE);
 }
 /* USER CODE END 4 */
 

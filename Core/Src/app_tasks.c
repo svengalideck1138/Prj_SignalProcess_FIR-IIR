@@ -28,6 +28,7 @@
 #include "usart.h"
 #include "tim.h"
 #include "openx07v_c_lcd.h"
+#include "filters.h"
 #include "arm_math.h"
 #include <string.h>
 #include <math.h>       /* log10f (dB 스케일) */
@@ -42,11 +43,15 @@
 #define FFT_SAMPLES     512                 /* 입력 버퍼 크기(실수+허수 인터리브) */
 #define FFT_POINTS      (FFT_SAMPLES / 2)   /* FFT 포인트 수 = 256              */
 
-/* FFT 막대 그래프 표시 파라미터 (로그/dB 스케일) */
-#define FFT_BASE_Y      239      /* 막대 바닥 y 좌표 */
-#define FFT_MAX_HEIGHT  200      /* 막대 최대 높이(px) */
-#define FFT_DB_MIN      45.0f    /* 이 dB 이하 = 막대 없음(바닥). 노이즈 플로어를 가리도록 올림(30->45) */
-#define FFT_DB_MAX      90.0f    /* 이 dB 이상 = 최대 높이로 클램프 */
+/* 시간영역 3분할 표시 레이아웃: RAW / FIR / IIR 을 각자의 밴드에 그린다.
+ * 값 0..63 을 각 밴드 64px 에 매핑(값↑ = 위쪽). 좌측 X0 이전은 라벨 영역(파형이 안 침범). */
+#define TD_X0        28                           /* 파형 시작 x (좌측 라벨 보존) */
+#define TD_BAND      64                           /* 밴드 높이(값 0..63) */
+#define TD_GAP       8                            /* 밴드 사이 간격 */
+#define RAW_TOP      22                           /* RAW 밴드 상단 y (헤더 아래) */
+#define FIR_TOP      (RAW_TOP + TD_BAND + TD_GAP) /* = 94  */
+#define IIR_TOP      (FIR_TOP + TD_BAND + TD_GAP) /* = 166 */
+#define TD_BOTTOM    (IIR_TOP + TD_BAND)          /* = 230 (< 239) */
 
 /* 태스크 우선순위 (높을수록 우선)
  * UART 를 FFT 보다 높게 둔다: UartTask 는 IT(인터럽트) 전송을 "시작"만 하고
@@ -62,11 +67,17 @@
 #define STACK_FFT       512
 #define STACK_UART      512
 
-/* UART 프레임 헤더/타입 */
+/* UART 프레임 헤더/타입.  type = [신호][도메인]
+ *   신호  : RAW(원본) / FIR / IIR
+ *   도메인: RAW=시간영역,  FFT=주파수영역 크기 */
 #define FRAME_SOF0      0x03
 #define FRAME_SOF1      0x15
-#define FRAME_TYPE_RAW  0x01    /* 시간영역(Raw) */
-#define FRAME_TYPE_FFT  0x02    /* 주파수영역(FFT) */
+#define FRAME_TYPE_RAW      0x01    /* 원본 시간영역  */
+#define FRAME_TYPE_FFT      0x02    /* 원본 FFT       */
+#define FRAME_TYPE_FIR_RAW  0x03    /* FIR  시간영역  */
+#define FRAME_TYPE_FIR_FFT  0x04    /* FIR  FFT       */
+#define FRAME_TYPE_IIR_RAW  0x05    /* IIR  시간영역  */
+#define FRAME_TYPE_IIR_FFT  0x06    /* IIR  FFT       */
 
 /* External variables --------------------------------------------------------*/
 extern uint8_t AdcVal;          /* main.c: ADC1 DMA 가 갱신하는 최신 샘플(8bit) */
@@ -80,10 +91,20 @@ static SemaphoreHandle_t uartTxDoneSem;     /* USART3 TX 완료 ISR -> UartTask 
 static SemaphoreHandle_t lcdMutex;          /* LCD 공유 보호 */
 static SemaphoreHandle_t dataMutex;         /* fftMag / rawBytes 공유 보호 */
 
-/* 데이터 버퍼 */
-static float32_t adcBuf[2][FFT_SAMPLES];    /* 핑퐁: AdcTask 가 채움 */
-static float32_t fftMag[FFT_POINTS];        /* FFT 크기 결과 (dataMutex 보호) */
-static uint8_t   rawBytes[FFT_POINTS];      /* 시간영역 샘플 바이트 (dataMutex 보호) */
+/* 데이터 버퍼 (핑퐁: AdcTask 가 한쪽을 채우는 동안 FftTask 는 반대쪽 처리)
+ * 3개 신호(원본/FIR/IIR)를 각각 복소 인터리브로 저장한다(허수부=0). */
+static float32_t adcBuf[2][FFT_SAMPLES];    /* 원본 */
+static float32_t firBuf[2][FFT_SAMPLES];    /* FIR 출력 */
+static float32_t iirBuf[2][FFT_SAMPLES];    /* IIR 출력 */
+
+/* 공유 결과 (dataMutex 보호): FftTask 가 쓰고 UartTask 가 읽음 */
+static float32_t fftMag[FFT_POINTS];        /* 원본 FFT 크기 */
+static float32_t firMag[FFT_POINTS];        /* FIR  FFT 크기 */
+static float32_t iirMag[FFT_POINTS];        /* IIR  FFT 크기 */
+static uint8_t   rawBytes[FFT_POINTS];      /* 원본 시간영역 바이트 */
+static uint8_t   firBytes[FFT_POINTS];      /* FIR  시간영역 바이트 */
+static uint8_t   iirBytes[FFT_POINTS];      /* IIR  시간영역 바이트 */
+static float32_t fftWin[FFT_POINTS];        /* FFT 누설 저감용 Hann 창 (FftTask 가 1회 계산) */
 
 /* Task handles */
 static TaskHandle_t hAdcTask;
@@ -94,8 +115,9 @@ static TaskHandle_t hUartTask;
 static void AdcTask(void *argument);
 static void FftTask(void *argument);
 static void UartTask(void *argument);
-static uint16_t Build_RawFrame(uint8_t *out, const uint8_t *samples, uint16_t n);
-static uint16_t Build_FftFrame(uint8_t *out, const float32_t *mag, uint16_t n);
+static uint16_t Build_TimeFrame(uint8_t *out, uint8_t type, const uint8_t *samples, uint16_t n);
+static uint16_t Build_FftFrame(uint8_t *out, uint8_t type, const float32_t *mag, uint16_t n);
+static void     Uart_Send(const uint8_t *buf, uint16_t len);
 
 /* ===========================================================================
  *  ISR hook
@@ -138,13 +160,37 @@ void HAL_UART_TxCpltCallback(UART_HandleTypeDef *huart)
 /* ===========================================================================
  *  AdcTask : 샘플 수집 + 시간영역 LCD 표시
  * ===========================================================================*/
+/* 값(공칭 0..63)을 지정 밴드의 y 좌표로 매핑(값↑ = 위쪽, 밴드 밖은 클램프). */
+static uint16_t MapBand(float32_t val, uint16_t top)
+{
+    int iv = (int)(val + 0.5f);
+    if (iv < 0)  iv = 0;
+    if (iv > 63) iv = 63;
+    return (uint16_t)(top + (63 - iv));
+}
+
 static void AdcTask(void *argument)
 {
     uint16_t idx = 0;       /* 복소 샘플 인덱스 0..FFT_POINTS-1 */
     uint8_t  cur = 0;       /* 현재 채우는 핑퐁 버퍼 */
-    uint16_t x   = 0;       /* 시간영역 그래프 X 좌표 */
+    uint16_t x   = TD_X0;   /* 시간영역 그래프 X 좌표 (좌측 라벨 영역 이후부터) */
+    uint8_t  drawDiv = 0;   /* 표시 데시메이션 (3샘플당 1회 그림: 3밴드 지우기 부하↓) */
 
     (void)argument;
+
+    /* 밴드 라벨 1회 표시 (좌측, 파형 영역 밖이라 지워지지 않음) */
+    if (xSemaphoreTake(lcdMutex, portMAX_DELAY) == pdTRUE)
+    {
+        BSP_LCD_SetFont(&Font12);
+        BSP_LCD_SetBackColor(LCD_COLOR_BLACK);
+        BSP_LCD_SetTextColor(LCD_COLOR_YELLOW);
+        BSP_LCD_DisplayStringAt(2, RAW_TOP, (uint8_t *)"RAW", LEFT_MODE);
+        BSP_LCD_SetTextColor(LCD_COLOR_GREEN);
+        BSP_LCD_DisplayStringAt(2, FIR_TOP, (uint8_t *)"FIR", LEFT_MODE);
+        BSP_LCD_SetTextColor(LCD_COLOR_CYAN);
+        BSP_LCD_DisplayStringAt(2, IIR_TOP, (uint8_t *)"IIR", LEFT_MODE);
+        xSemaphoreGive(lcdMutex);
+    }
 
     for (;;)
     {
@@ -157,18 +203,46 @@ static void AdcTask(void *argument)
         adcBuf[cur][idx * 2]     = (float32_t)v;
         adcBuf[cur][idx * 2 + 1] = 0.0f;
 
-        /* --- 2) 시간영역 LCD 표시 (LCD 가 점유 중이면 건너뜀: 샘플링은 절대 막지 않음) --- */
-        if (xSemaphoreTake(lcdMutex, 0) == pdTRUE)
-        {
-            BSP_LCD_SetTextColor(LCD_COLOR_YELLOW);
-            BSP_LCD_FillCircle(x, v + 40, 1);
-            BSP_LCD_SetTextColor(LCD_COLOR_BLACK);
-            BSP_LCD_DrawVLine(x + 1, 35, 70);
-            xSemaphoreGive(lcdMutex);
-        }
-        if (++x >= 320) x = 0;
+        /* --- 2) FIR / IIR 저역통과 처리 : 매 샘플 호출(필터 상태 유지).
+         *        결과를 FFT 용 핑퐁 버퍼에도 저장(허수부=0)해 FftTask 가 스펙트럼을 낸다. --- */
+        float32_t fFir = Filter_FIR_LPF((float32_t)v);
+        float32_t fIir = Filter_IIR_LPF((float32_t)v);
+        /* 필터 출력을 FFT 용 버퍼에도 저장(허수부=0) — UART FFT 프레임용 */
+        firBuf[cur][idx * 2]     = fFir;
+        firBuf[cur][idx * 2 + 1] = 0.0f;
+        iirBuf[cur][idx * 2]     = fIir;
+        iirBuf[cur][idx * 2 + 1] = 0.0f;
 
-        /* --- 3) 한 블록(256 샘플)이 차면 FftTask 로 넘기고 버퍼 교체 --- */
+        /* --- 3) 시간영역 LCD 표시 : 2샘플당 1회만 그린다.
+         *        최고 우선순위인 AdcTask 가 매 샘플 무거운 LCD 그리기를 하면
+         *        샘플 틱 세마포어가 비워지지 않아, 최저 우선순위 FftTask 가
+         *        CPU 를 못 받아(FFT 표시가 멈춤). 그리기를 줄여 CPU 를 양보한다.
+         *        (필터는 위에서 매 샘플 처리하므로 필터링 정확도엔 영향 없음.)
+         *        원본(노랑) 위에 FIR(초록)/IIR(시안) 을 겹쳐 비교 표시.
+         *        FIR 은 선형위상이라 약 (N-1)/2 = 15 샘플 지연되어 보인다. --- */
+        if (++drawDiv >= 3)
+        {
+            drawDiv = 0;
+            if (xSemaphoreTake(lcdMutex, 0) == pdTRUE)   /* LCD 점유 중이면 건너뜀 */
+            {
+                /* 다음 컬럼(세 밴드 전체)을 미리 지운다 */
+                BSP_LCD_SetTextColor(LCD_COLOR_BLACK);
+                BSP_LCD_DrawVLine(x + 1, RAW_TOP, TD_BOTTOM - RAW_TOP);
+
+                /* 각 신호를 자기 밴드에 점으로: RAW=노랑 / FIR=초록 / IIR=시안 */
+                BSP_LCD_SetTextColor(LCD_COLOR_YELLOW);
+                BSP_LCD_DrawVLine(x, MapBand((float32_t)v, RAW_TOP), 1);
+                BSP_LCD_SetTextColor(LCD_COLOR_GREEN);
+                BSP_LCD_DrawVLine(x, MapBand(fFir, FIR_TOP), 1);
+                BSP_LCD_SetTextColor(LCD_COLOR_CYAN);
+                BSP_LCD_DrawVLine(x, MapBand(fIir, IIR_TOP), 1);
+
+                xSemaphoreGive(lcdMutex);
+            }
+            if (++x >= 320) x = TD_X0;
+        }
+
+        /* --- 4) 한 블록(256 샘플)이 차면 FftTask 로 넘기고 버퍼 교체 --- */
         if (++idx >= FFT_POINTS)
         {
             idx = 0;
@@ -178,33 +252,52 @@ static void AdcTask(void *argument)
     }
 }
 
-/* magnitude 를 로그(dB) 스케일로 막대 끝(top) y 좌표로 변환.
- * [FFT_DB_MIN, FFT_DB_MAX] dB 구간을 [0, FFT_MAX_HEIGHT] px 에 선형 매핑하고 클램프한다.
- * (DrawLine 의 y 인자는 uint16_t 라서 클램프로 화면 밖 출력을 막는다.) */
-static uint16_t Fft_BarTopY(float32_t magnitude)
+/* float 샘플을 0..255 바이트로 클램프(필터 링잉으로 음수/초과가 생길 수 있음). */
+static uint8_t Clamp8(float32_t v)
 {
-    float32_t db = 20.0f * log10f(magnitude + 1.0f);   /* +1: log(0) 방지 */
-    int h = (int)((db - FFT_DB_MIN) * ((float32_t)FFT_MAX_HEIGHT / (FFT_DB_MAX - FFT_DB_MIN)));
-    if (h < 0)              h = 0;
-    if (h > FFT_MAX_HEIGHT) h = FFT_MAX_HEIGHT;
-    return (uint16_t)(FFT_BASE_Y - h);
+    int iv = (int)(v + 0.5f);
+    if (iv < 0)   iv = 0;
+    if (iv > 255) iv = 255;
+    return (uint8_t)iv;
+}
+
+/* 한 신호 블록을 DC 제거 -> in-place 복소 FFT -> 크기 로 변환한다.
+ * (입력 buf 는 덮어써지므로, 시간영역 스냅샷은 호출 전에 떠 두어야 한다.) */
+static void Fft_Compute(arm_cfft_radix4_instance_f32 *S, float32_t *buf, float32_t *magOut)
+{
+    uint16_t i;
+    float32_t mean = 0.0f;
+
+    for (i = 0; i < FFT_POINTS; i++)
+        mean += buf[i * 2];
+    mean /= (float32_t)FFT_POINTS;
+    /* DC 제거 후 Hann 창 적용(누설 저감).
+     * 창 = 2*0.5*(1-cos) = (1-cos): 평균 이득 1 이라 피크 크기는 거의 보존된다. */
+    for (i = 0; i < FFT_POINTS; i++)
+        buf[i * 2] = (buf[i * 2] - mean) * fftWin[i];   /* 허수부(buf[i*2+1]) 는 0 유지 */
+
+    arm_cfft_radix4_f32(S, buf);
+    arm_cmplx_mag_f32(buf, magOut, FFT_POINTS);
 }
 
 /* ===========================================================================
- *  FftTask : FFT 변환 + magnitude + FFT LCD 표시
+ *  FftTask : 원본/FIR/IIR 각각 FFT (UART 전송용). LCD 표시는 하지 않음.
  * ===========================================================================*/
 static void FftTask(void *argument)
 {
     arm_cfft_radix4_instance_f32 S;
-    static float32_t mag[FFT_POINTS];       /* 연산용 임시(스택 절약 위해 static) */
-    static float32_t prevMag[FFT_POINTS];   /* 직전 표시값 = LCD 지우기 기준 */
+    static float32_t magR[FFT_POINTS], magF[FFT_POINTS], magI[FFT_POINTS]; /* static: 스택 절약 */
     uint8_t bufIdx;
     uint16_t i;
 
     (void)argument;
 
-    /* 파라미터가 고정이므로 초기화는 한 번만 (기존 코드는 매 사이클 호출했음) */
     arm_cfft_radix4_init_f32(&S, FFT_POINTS, 0, 1);
+
+    /* Hann 창 1회 계산. 사각창(창 없음)이면 강한 저주파 에너지가 전 대역으로 퍼져
+     * 노이즈 플로어/오프셋처럼 보인다(저역통과 신호에서 특히 두드러짐). */
+    for (i = 0; i < FFT_POINTS; i++)
+        fftWin[i] = 1.0f - cosf(2.0f * PI * (float32_t)i / (float32_t)(FFT_POINTS - 1));
 
     for (;;)
     {
@@ -212,51 +305,33 @@ static void FftTask(void *argument)
         if (xQueueReceive(fftQueue, &bufIdx, portMAX_DELAY) != pdTRUE)
             continue;
 
-        float32_t *in = adcBuf[bufIdx];
-
-        /* --- 1) in-place FFT 가 Input 을 덮어쓰기 전에 시간영역(실수부) 스냅샷 저장 --- */
+        /* --- 1) in-place FFT 가 입력을 덮어쓰기 전에 3개 신호의 시간영역 스냅샷 --- */
         if (xSemaphoreTake(dataMutex, portMAX_DELAY) == pdTRUE)
         {
             for (i = 0; i < FFT_POINTS; i++)
-                rawBytes[i] = (uint8_t)in[i * 2];
+            {
+                rawBytes[i] = Clamp8(adcBuf[bufIdx][i * 2]);
+                firBytes[i] = Clamp8(firBuf[bufIdx][i * 2]);
+                iirBytes[i] = Clamp8(iirBuf[bufIdx][i * 2]);
+            }
             xSemaphoreGive(dataMutex);
         }
 
-        /* --- 2) DC 오프셋 제거 (실수부에만; 허수부는 0 유지) --- */
-        float32_t mean = 0.0f;
-        for (i = 0; i < FFT_POINTS; i++)
-            mean += in[i * 2];
-        mean /= (float32_t)FFT_POINTS;
-        for (i = 0; i < FFT_POINTS; i++)
-            in[i * 2] = in[i * 2] - mean;   /* in[i*2+1] 은 0 그대로 */
+        /* --- 2) 원본 / FIR / IIR 각각 DC제거 + FFT + 크기 --- */
+        Fft_Compute(&S, adcBuf[bufIdx], magR);
+        Fft_Compute(&S, firBuf[bufIdx], magF);
+        Fft_Compute(&S, iirBuf[bufIdx], magI);
 
-        /* --- 3) 복소 FFT (in-place) + 크기 계산 --- */
-        arm_cfft_radix4_f32(&S, in);
-        arm_cmplx_mag_f32(in, mag, FFT_POINTS);
-
-        /* --- 4) 결과 공개 (UartTask 가 읽음) --- */
+        /* --- 3) 결과 공개 (UartTask 가 읽음) --- */
         if (xSemaphoreTake(dataMutex, portMAX_DELAY) == pdTRUE)
         {
-            memcpy(fftMag, mag, sizeof(fftMag));
+            memcpy(fftMag, magR, sizeof(fftMag));
+            memcpy(firMag, magF, sizeof(firMag));
+            memcpy(iirMag, magI, sizeof(iirMag));
             xSemaphoreGive(dataMutex);
         }
 
-        /* --- 5) FFT LCD 표시 (이전 막대 지우고 새로 그림) --- */
-        if (xSemaphoreTake(lcdMutex, portMAX_DELAY) == pdTRUE)
-        {
-            BSP_LCD_SetTextColor(LCD_COLOR_BLACK);
-            for (i = 2; i < (FFT_POINTS / 2); i++)
-                BSP_LCD_DrawLine(i, FFT_BASE_Y, i, Fft_BarTopY(prevMag[i]));
-
-            BSP_LCD_SetTextColor(LCD_COLOR_YELLOW);
-            for (i = 2; i < (FFT_POINTS / 2); i++)
-                BSP_LCD_DrawLine(i, FFT_BASE_Y, i, Fft_BarTopY(mag[i]));
-
-            xSemaphoreGive(lcdMutex);
-        }
-        memcpy(prevMag, mag, sizeof(prevMag));
-
-        /* --- 6) UartTask 에 새 데이터 도착 통지 --- */
+        /* --- 4) UartTask 에 새 데이터 도착 통지 (LCD 표시는 AdcTask 의 시간영역만) --- */
         xSemaphoreGive(uartReadySem);
     }
 }
@@ -264,14 +339,23 @@ static void FftTask(void *argument)
 /* ===========================================================================
  *  UartTask : 프레임 인코딩 + 전송 (블로킹, 최저 우선순위)
  * ===========================================================================*/
+/* 한 프레임을 IT(비차단)로 전송 시작하고, 완료 세마포어에서 잠들어 대기한다.
+ * 전송 중 CPU 는 FftTask 등 다른 태스크가 사용한다(자체 페이싱). */
+static void Uart_Send(const uint8_t *buf, uint16_t len)
+{
+    if (HAL_UART_Transmit_IT(&huart3, (uint8_t *)buf, len) == HAL_OK)
+        xSemaphoreTake(uartTxDoneSem, portMAX_DELAY);
+}
+
 static void UartTask(void *argument)
 {
-    /* 전송 버퍼 / 로컬 복사본 (static: 스택 절약) */
-    static uint8_t   txRaw[FFT_POINTS + 5];         /* 헤더5 + 256 */
-    static uint8_t   txFft[FFT_POINTS * 4 + 5];     /* 헤더5 + 1024 */
-    static uint8_t   localRaw[FFT_POINTS];
-    static float32_t localMag[FFT_POINTS];
-    uint16_t lenRaw, lenFft;
+    /* 전송 버퍼(시간영역/ FFT 각 1개를 6프레임이 순차 재사용 — Uart_Send 가 완료를
+     * 기다린 뒤 반환하므로 다음 Build 가 덮어써도 안전) + 로컬 복사본 (static) */
+    static uint8_t   txTime[FFT_POINTS + 5];        /* 헤더5 + 256  */
+    static uint8_t   txFft [FFT_POINTS * 4 + 5];    /* 헤더5 + 1024 */
+    static uint8_t   locRaw[FFT_POINTS], locFir[FFT_POINTS], locIir[FFT_POINTS];
+    static float32_t locMagR[FFT_POINTS], locMagF[FFT_POINTS], locMagI[FFT_POINTS];
+    uint16_t len;
 
     (void)argument;
 
@@ -281,50 +365,52 @@ static void UartTask(void *argument)
         if (xSemaphoreTake(uartReadySem, portMAX_DELAY) != pdTRUE)
             continue;
 
-        /* 공유 데이터를 짧게 잠그고 로컬로 복사한 뒤, 전송은 잠금 없이 수행
-         * (느린 전송 동안 dataMutex 를 잡고 있으면 FftTask 가 막히므로) */
+        /* 공유 데이터를 짧게 잠그고 6종 모두 로컬 복사 후, 전송은 잠금 없이 수행 */
         if (xSemaphoreTake(dataMutex, portMAX_DELAY) == pdTRUE)
         {
-            memcpy(localRaw, rawBytes, sizeof(localRaw));
-            memcpy(localMag, fftMag,   sizeof(localMag));
+            memcpy(locRaw,  rawBytes, sizeof(locRaw));
+            memcpy(locFir,  firBytes, sizeof(locFir));
+            memcpy(locIir,  iirBytes, sizeof(locIir));
+            memcpy(locMagR, fftMag,   sizeof(locMagR));
+            memcpy(locMagF, firMag,   sizeof(locMagF));
+            memcpy(locMagI, iirMag,   sizeof(locMagI));
             xSemaphoreGive(dataMutex);
         }
 
-        /* Raw(시간영역) 프레임 — 인터럽트 기반 비차단 전송 시작 후, 완료까지 잠들어 대기.
-         * 전송이 진행되는 동안 CPU 는 FftTask 등 다른 태스크가 사용한다. */
-        lenRaw = Build_RawFrame(txRaw, localRaw, FFT_POINTS);
-        if (HAL_UART_Transmit_IT(&huart3, txRaw, lenRaw) == HAL_OK)
-            xSemaphoreTake(uartTxDoneSem, portMAX_DELAY);
+        /* 시간영역 3종 */
+        len = Build_TimeFrame(txTime, FRAME_TYPE_RAW,     locRaw, FFT_POINTS);  Uart_Send(txTime, len);
+        len = Build_TimeFrame(txTime, FRAME_TYPE_FIR_RAW, locFir, FFT_POINTS);  Uart_Send(txTime, len);
+        len = Build_TimeFrame(txTime, FRAME_TYPE_IIR_RAW, locIir, FFT_POINTS);  Uart_Send(txTime, len);
 
-        /* FFT(주파수영역) 프레임 */
-        lenFft = Build_FftFrame(txFft, localMag, FFT_POINTS);
-        if (HAL_UART_Transmit_IT(&huart3, txFft, lenFft) == HAL_OK)
-            xSemaphoreTake(uartTxDoneSem, portMAX_DELAY);
+        /* 주파수영역(FFT) 3종 */
+        len = Build_FftFrame(txFft, FRAME_TYPE_FFT,     locMagR, FFT_POINTS);   Uart_Send(txFft, len);
+        len = Build_FftFrame(txFft, FRAME_TYPE_FIR_FFT, locMagF, FFT_POINTS);   Uart_Send(txFft, len);
+        len = Build_FftFrame(txFft, FRAME_TYPE_IIR_FFT, locMagI, FFT_POINTS);   Uart_Send(txFft, len);
     }
 }
 
 /* ===========================================================================
  *  프레임 인코딩 헬퍼
  * ===========================================================================*/
-/* Raw 프레임: [0x03][0x15][0x01][len_hi][len_lo][samples...]  (len = n 바이트) */
-static uint16_t Build_RawFrame(uint8_t *out, const uint8_t *samples, uint16_t n)
+/* 시간영역 프레임: [0x03][0x15][type][len_hi][len_lo][samples...]  (len = n 바이트) */
+static uint16_t Build_TimeFrame(uint8_t *out, uint8_t type, const uint8_t *samples, uint16_t n)
 {
     out[0] = FRAME_SOF0;
     out[1] = FRAME_SOF1;
-    out[2] = FRAME_TYPE_RAW;
+    out[2] = type;
     out[3] = (uint8_t)((n >> 8) & 0xFF);
     out[4] = (uint8_t)(n & 0xFF);
     memcpy(&out[5], samples, n);
     return (uint16_t)(n + 5);
 }
 
-/* FFT 프레임: [0x03][0x15][0x02][len_hi][len_lo][float32 LE ...]  (len = n*4 바이트) */
-static uint16_t Build_FftFrame(uint8_t *out, const float32_t *mag, uint16_t n)
+/* FFT 프레임: [0x03][0x15][type][len_hi][len_lo][float32 LE ...]  (len = n*4 바이트) */
+static uint16_t Build_FftFrame(uint8_t *out, uint8_t type, const float32_t *mag, uint16_t n)
 {
     uint16_t payload = (uint16_t)(n * 4);
     out[0] = FRAME_SOF0;
     out[1] = FRAME_SOF1;
-    out[2] = FRAME_TYPE_FFT;
+    out[2] = type;
     out[3] = (uint8_t)((payload >> 8) & 0xFF);
     out[4] = (uint8_t)(payload & 0xFF);
     memcpy(&out[5], mag, payload);  /* float32 little-endian 그대로 복사 */
@@ -336,6 +422,9 @@ static uint16_t Build_FftFrame(uint8_t *out, const float32_t *mag, uint16_t n)
  * ===========================================================================*/
 void App_FreeRTOS_Init(void)
 {
+    /* --- FIR/IIR 필터 계수 설계 + 상태 초기화 (스케줄러 시작 전) --- */
+    Filters_Init();
+
     /* --- 동기화 객체 생성 --- */
     sampleTickSem = xSemaphoreCreateCounting(16, 0);   /* 틱 누락 방지용 카운팅 */
     uartReadySem  = xSemaphoreCreateBinary();

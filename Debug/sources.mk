@@ -27,6 +27,7 @@ Core/Startup \
 Core/ThreadSafe \
 Drivers/CMSIS/DSP/Source/CommonTables \
 Drivers/CMSIS/DSP/Source/ComplexMathFunctions \
+Drivers/CMSIS/DSP/Source/FilteringFunctions \
 Drivers/CMSIS/DSP/Source/TransformFunctions \
 Drivers/STM32F4xx_HAL_Driver/Src \
 Middlewares/Third_Party/FreeRTOS/Source/CMSIS_RTOS \

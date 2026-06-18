@@ -15,6 +15,7 @@ RM := rm -rf
 -include Middlewares/Third_Party/FreeRTOS/Source/subdir.mk
 -include Drivers/STM32F4xx_HAL_Driver/Src/subdir.mk
 -include Drivers/CMSIS/DSP/Source/TransformFunctions/subdir.mk
+-include Drivers/CMSIS/DSP/Source/FilteringFunctions/subdir.mk
 -include Drivers/CMSIS/DSP/Source/ComplexMathFunctions/subdir.mk
 -include Drivers/CMSIS/DSP/Source/CommonTables/subdir.mk
 -include Core/ThreadSafe/subdir.mk

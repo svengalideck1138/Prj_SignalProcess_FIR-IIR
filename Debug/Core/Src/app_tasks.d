@@ -35,7 +35,7 @@ Core/Src/app_tasks.o: ../Core/Src/app_tasks.c ../Core/Inc/app_tasks.h \
  ../Drivers/STM32F4xx_HAL_Driver/Inc/stm32f4xx_hal_uart.h \
  ../Core/Inc/adc.h ../Core/Inc/main.h ../Core/Inc/usart.h \
  ../Core/Inc/tim.h ../Core/Inc/openx07v_c_lcd.h ../Core/Inc/ili9325.h \
- ../Core/Inc/lcd.h ../Core/Inc/fonts.h \
+ ../Core/Inc/lcd.h ../Core/Inc/fonts.h ../Core/Inc/filters.h \
  C:/Users/Zhenyu/MySource/Git/Prj_SignalProcess_FIR-IIR/Drivers/CMSIS/DSP/Include/arm_math.h \
  C:/Users/Zhenyu/MySource/Git/Prj_SignalProcess_FIR-IIR/Drivers/CMSIS/DSP/Include/arm_math_types.h \
  ../Drivers/CMSIS/Include/cmsis_compiler.h \
@@ -123,6 +123,7 @@ Core/Src/app_tasks.o: ../Core/Src/app_tasks.c ../Core/Inc/app_tasks.h \
 ../Core/Inc/ili9325.h:
 ../Core/Inc/lcd.h:
 ../Core/Inc/fonts.h:
+../Core/Inc/filters.h:
 C:/Users/Zhenyu/MySource/Git/Prj_SignalProcess_FIR-IIR/Drivers/CMSIS/DSP/Include/arm_math.h:
 C:/Users/Zhenyu/MySource/Git/Prj_SignalProcess_FIR-IIR/Drivers/CMSIS/DSP/Include/arm_math_types.h:
 ../Drivers/CMSIS/Include/cmsis_compiler.h:

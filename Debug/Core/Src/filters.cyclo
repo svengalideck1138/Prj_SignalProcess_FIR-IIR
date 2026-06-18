@@ -1,0 +1,6 @@
+../Core/Src/filters.c:32:13:Fir_Design_LPF	4
+../Core/Src/filters.c:66:13:Iir_Design_LPF	1
+../Core/Src/filters.c:92:6:Filters_Init	2
+../Core/Src/filters.c:103:11:Filter_FIR_LPF	3
+../Core/Src/filters.c:118:11:Filter_IIR_LPF	1
+../Core/Src/filters.c:133:6:Filters_DrawLegend	1
