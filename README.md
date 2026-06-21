@@ -199,6 +199,49 @@ cs = id ^ len_hi ^ len_lo ^ (payload 전체 바이트 XOR)
 > PC 측은 형제 저장소 `Prj_SignalProcess_Monitor` (C# WinForms)에서 producer-consumer
 > 리더 + ID별 길이 검증 + 체크섬으로 파싱하여 6개 차트를 그린다.
 
+### 5.1 C# 수신부의 체크섬(CRC) 검사 → 통신 오류 감소
+
+921600 bps 고속·고밀도(블록당 6프레임 ≈ 4.6 KB) 전송에서는 비트 깨짐과 동기 어긋남이
+빈번하다. C# 모니터(`SerialFrameReader.cs`)는 **상태기계 파서 + 무결성 검사**로 깨진
+데이터가 화면(차트)까지 올라오지 못하게 막는다. 그 결과 그래프가 튀거나 깨지는 현상이
+크게 줄었다.
+
+송신(STM32)과 수신(C#)이 **동일한 XOR 체크섬** 규약을 공유한다.
+
+```
+cs = id ^ len_hi ^ len_lo ^ (payload 전체 바이트 XOR)
+```
+
+```csharp
+// SerialFrameReader.ParseByte() — 수신 누적 체크섬
+case St.LenLo:
+    _len |= b;
+    if (_len != ExpectedLen(_id)) { _st = St.Sof0; break; }       // ① ID별 길이 검증
+    _cs = (byte)(_id ^ ((_len >> 8) & 0xFF) ^ (_len & 0xFF));
+    ...
+case St.Payload:
+    _payload[_idx++] = b;  _cs ^= b;                              // 페이로드 누적 XOR
+    ...
+case St.Checksum:
+    if (b == _cs) FrameReceived?.Invoke(_id, _payload);           // ② 일치할 때만 전달, 불일치 폐기
+    _st = St.Sof0;
+```
+
+오류를 줄이는 3중 방어:
+
+| 방어 | 내용 | 막아주는 오류 |
+|------|------|---------------|
+| **① ID별 길이 검증** | `ExpectedLen(id)` 와 다른 길이면 즉시 재동기 | 페이로드 속 `0x03 0x15` 를 헤더로 오인한 **가짜 동기** |
+| **② XOR 체크섬** | 수신 누적 XOR ≠ 마지막 바이트면 프레임 **폐기** | 전송 중 **비트 깨짐(라인 오류)** 프레임 |
+| **③ SOF 재동기** | `0x03 0x15` 2바이트 시작코드 + 상태기계 | 바이트 유실 후 **프레임 경계 어긋남** |
+
+또한 **producer-consumer 구조**(읽기 스레드 ↔ 파싱 태스크 분리)로 시리얼 읽기가
+파싱에 막히지 않아 버퍼 오버런/데이터 끊김도 방지한다.
+
+> 비고: 이름은 "CRC 검사"로 부르지만 실제 구현은 **1바이트 XOR 체크섬**이다.
+> 가볍고 단일 비트 오류 검출에 충분하다. 더 강한 검출이 필요하면 양쪽을
+> CRC-8/CRC-16 으로 교체할 수 있다(프레임 구조는 그대로).
+
 ---
 
 ## 6. 소스 구성
@@ -216,8 +259,3 @@ cs = id ^ len_hi ^ len_lo ^ (payload 전체 바이트 XOR)
 > **링커 오류**(`undefined reference`)가 난다. 같은 버전의 소스 폴더를 추가하면 된다.
 
 ---
-
-## 8. 빌드
-
-STM32CubeIDE managed make. 소스 파일을 추가/삭제한 뒤에는 IDE에서
-**Refresh(F5) → Clean → Build** 로 `Debug/**/subdir.mk` 를 재생성해야 한다.
