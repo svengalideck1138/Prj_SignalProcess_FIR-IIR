@@ -1,5 +1,9 @@
 # Prj_SignalProcess_FIR-IIR
 
+<p align="center">
+  <img src="docs/demo.gif" alt="FIR/IIR 실시간 필터 데모" width="640">
+</p>
+
 STM32F407 + FreeRTOS 기반 **실시간 FIR / IIR 밴드패스 필터 + FFT 스펙트럼 분석기**.
 
 ADC로 수집한 아날로그 신호를 FIR·IIR 두 방식으로 동시에 필터링하고, 원신호를 포함한
@@ -197,22 +201,7 @@ cs = id ^ len_hi ^ len_lo ^ (payload 전체 바이트 XOR)
 
 ---
 
-## 6. 화면 레이아웃 (TFT 6 plot)
-
-3행(RAW=노랑 / FIR=초록 / IIR=시안) × 2열(좌=시간영역, 우=FFT).
-
-```
-        시간영역 (좌)        FFT (우)
-RAW   [ ~~~~~~~~~~ ]     [ |.._.._..  ]
-FIR   [ ~~~~~~~~~~ ]     [ ___|‾|___  ]   ← 통과대역만 통과
-IIR   [ ~~~~~~~~~~ ]     [ ___|‾|___  ]
-```
-
-각 plot 146×64 px, 직전 곡선을 지우고 새 곡선을 그리는 방식(`Plot_Render`)으로 갱신.
-
----
-
-## 7. 소스 구성
+## 6. 소스 구성
 
 | 파일 | 내용 |
 |------|------|
