@@ -102,7 +102,7 @@ void HAL_ADC_MspInit(ADC_HandleTypeDef* adcHandle)
     hdma_adc1.Init.Channel = DMA_CHANNEL_0;
     hdma_adc1.Init.Direction = DMA_PERIPH_TO_MEMORY;
     hdma_adc1.Init.PeriphInc = DMA_PINC_DISABLE;
-    hdma_adc1.Init.MemInc = DMA_MINC_DISABLE;
+    hdma_adc1.Init.MemInc = DMA_MINC_ENABLE;   /* 블록 DMA: 버퍼를 따라 증가하며 채움 */
     hdma_adc1.Init.PeriphDataAlignment = DMA_PDATAALIGN_BYTE;
     hdma_adc1.Init.MemDataAlignment = DMA_MDATAALIGN_BYTE;
     hdma_adc1.Init.Mode = DMA_CIRCULAR;

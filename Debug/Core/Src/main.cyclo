@@ -1,4 +1,4 @@
 ../Core/Src/main.c:74:5:main	1
-../Core/Src/main.c:141:6:SystemClock_Config	3
-../Core/Src/main.c:183:6:LCD_TFT_Init_Calib	1
-../Core/Src/main.c:206:6:Error_Handler	1
+../Core/Src/main.c:137:6:SystemClock_Config	3
+../Core/Src/main.c:179:6:LCD_TFT_Init_Calib	1
+../Core/Src/main.c:203:6:Error_Handler	1

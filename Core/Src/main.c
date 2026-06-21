@@ -52,7 +52,7 @@
 /* Private variables ---------------------------------------------------------*/
 
 /* USER CODE BEGIN PV */
-uint8_t AdcVal = 0;     /* ADC1 DMA 가 갱신하는 최신 샘플 (app_tasks.c 에서 사용) */
+/* ADC 수집은 app_tasks.c 의 DspTask 가 블록 DMA 로 시작/처리한다. */
 /* USER CODE END PV */
 
 /* Private function prototypes -----------------------------------------------*/
@@ -107,12 +107,8 @@ int main(void)
 
 	BSP_LCD_Init();
 	LCD_TFT_Init_Calib();
-	/* ADC 를 DMA 모드로 시작(외부 트리거 대기) 후, TIM3 을 시작하면
-	 * TIM3 의 TRGO(Update) 가 ADC 변환을 균일하게 트리거한다.
-	 * (STM32F4 는 ADC regular 트리거로 TIM7 을 지원하지 않아 TIM3 사용)
-	 * TIM3 인터럽트는 불필요하므로 _IT 가 아닌 일반 Start 사용. */
-	HAL_ADC_Start_DMA(&hadc1, (uint32_t*)&AdcVal, 1);
-	HAL_TIM_Base_Start(&htim3);
+	/* ADC 블록 DMA + TIM3 트리거 시작은 DspTask(app_tasks.c)가 수행한다
+	 * (DMA 버퍼/동기화 객체가 거기 있고, 스케줄러 시작 후 안전하게 시작). */
   /* USER CODE END 2 */
 
   /* Call init function for freertos objects (in cmsis_os2.c) */
@@ -188,14 +184,15 @@ void LCD_TFT_Init_Calib(void)
 	BSP_LCD_SetBackColor(LCD_COLOR_BLACK);
 	BSP_LCD_Clear(LCD_COLOR_BLACK);
 
-	/* 상단 제목 띠 (시간영역 RAW/FIR/IIR 3분할 뷰). 밴드별 색상 라벨은 AdcTask 가 그린다. */
+	/* 상단 띠: 좌측 열=TIME, 우측 열=FFT. 행 라벨(RAW/FIR/IIR)은 DisplayTask 가 그린다. */
 	BSP_LCD_SetTextColor(LCD_COLOR_LIGHTGRAY);
 	BSP_LCD_FillRect(0, 0, 320, 17);
 
 	BSP_LCD_SetFont(&Font12);
 	BSP_LCD_SetBackColor(LCD_COLOR_LIGHTGRAY);
 	BSP_LCD_SetTextColor(LCD_COLOR_WHITE);
-	BSP_LCD_DisplayStringAt(3,3, (uint8_t*)"Time Domain : RAW / FIR / IIR",LEFT_MODE);
+	BSP_LCD_DisplayStringAt(70,  3, (uint8_t*)"TIME", LEFT_MODE);
+	BSP_LCD_DisplayStringAt(230, 3, (uint8_t*)"FFT",  LEFT_MODE);
 }
 /* USER CODE END 4 */
 
